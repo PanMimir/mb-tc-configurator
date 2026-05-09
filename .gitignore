@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Venv
+venv/
+.venv/
+
+# Build / dist
+build/
+dist/
+
+# PyInstaller
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
