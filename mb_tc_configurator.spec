@@ -73,4 +73,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='icon.ico',           # ikona pliku .exe
+    version='version_info.txt',
 )

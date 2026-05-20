@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MB-TC Configurator by Michał Pańczyk")
+        self.setWindowTitle("MB-TC Configurator by sincore.io")
         self.resize(820, 720)
 
         icon_path = _resource_path("icon.ico")
@@ -123,6 +123,8 @@ class MainWindow(QMainWindow):
     # BUDOWA GUI
     # =====================================================================
     def _build_ui(self):
+        self._build_menu()
+
         central = QWidget()
         self.setCentralWidget(central)
 
@@ -143,6 +145,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_tab_config(), "⚙ Konfiguracja")
         self.tabs.addTab(self._build_tab_diagnostics(), "📋 Diagnostyka")
         root.addWidget(self.tabs, stretch=1)
+
+    def _build_menu(self):
+        """Pasek menu - pozycja Pomoc z oknem "O programie"."""
+        help_menu = self.menuBar().addMenu("Pomoc")
+        about_action = help_menu.addAction("O programie")
+        about_action.triggered.connect(self._show_about)
 
     # ---------------------------------------------------------------------
     # ZAKŁADKA 1: Połączenie
@@ -1039,6 +1047,20 @@ class MainWindow(QMainWindow):
             self._log(f"Błąd odczytu informacji: {e}")
         except Exception as e:
             self._log_exception("read_device_info", e)
+
+    # =====================================================================
+    # OKNO "O PROGRAMIE"
+    # =====================================================================
+    def _show_about(self):
+        QMessageBox.about(
+            self,
+            "O programie",
+            "<b>MB-TC Configurator</b><br>"
+            "Wersja 1.0.1<br><br>"
+            "Konfigurator przetwornika temperatury F&amp;F MB-TC-1 (Modbus RTU).<br><br>"
+            "Producent: <a href='https://sincore.io'>sincore.io</a><br>"
+            "Kontakt: <a href='mailto:contact@sincore.io'>contact@sincore.io</a>",
+        )
 
     # =====================================================================
     # ZAMKNIĘCIE OKNA
