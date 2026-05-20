@@ -22,10 +22,15 @@ Aplikacja ma być prostszym i czytelniejszym odpowiednikiem programu *MB Config*
 
 ## Najszybszy start (Windows)
 
-### Wariant 1: gotowy .exe
+### Wariant 1: pobierz gotowy .exe (zalecane)
 
-Jeśli masz już plik `MB-TC-Configurator.exe` — po prostu uruchom go dwuklikiem.
-Nie wymaga instalacji Pythona ani niczego innego.
+Pobierz najnowszy `MB-TC-Configurator.exe` z
+**[GitHub Releases](https://github.com/PanMimir/mb-tc-configurator/releases/latest)**
+i uruchom dwuklikiem. Nie wymaga instalacji Pythona ani żadnych zależności.
+
+- **Wymagania:** Windows 10 / 11 (64-bit)
+- Plik nie jest podpisany cyfrowo — jeśli pojawi się ekran **SmartScreen**,
+  kliknij „Więcej informacji" → „Uruchom mimo to".
 
 ### Wariant 2: zbuduj .exe samodzielnie
 
