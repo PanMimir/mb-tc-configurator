@@ -137,6 +137,12 @@ BIT_ALARM_STATUS_ALARM_1 = 0
 # BITY W REJESTRZE TRYBU ALARMÓW (REG_ALARM_MODE, 0x0007)
 # ===========================================================================
 # 1 = wyzwalany powyżej zadanej temperatury, 0 = poniżej
+#
+# ZWERYFIKOWANE NA SPRZĘCIE 2026-05-21: bit=1 -> wyzwala gdy temp >= próg,
+# bit=0 -> wyzwala gdy temp <= próg. UWAGA: str. 2 instrukcji (przykłady
+# ustawień) ma to ODWROTNIE - to błąd producenta. Prawidłowa jest tabela
+# rejestrów (str. 12). Wartość alarmu (0x0C-0x0F) jest w SUROWYCH °C, nie ×10
+# - również zweryfikowane na sprzęcie.
 
 BIT_ALARM_MODE_ALARM_4 = 3
 BIT_ALARM_MODE_ALARM_3 = 2

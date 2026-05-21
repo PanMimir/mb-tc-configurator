@@ -16,6 +16,7 @@ Klasa wykrywa to automatycznie przy pierwszym wywołaniu.
 
 from typing import Optional
 import inspect
+import time
 
 from pymodbus.client import ModbusSerialClient
 from pymodbus.exceptions import ModbusException
@@ -139,6 +140,19 @@ class ModbusTemperatureDevice:
         """Zwraca True jeśli klient Modbus jest aktywny."""
         return self._client is not None and self._client.connected
 
+    def ping(self) -> bool:
+        """
+        Sprawdza, czy urządzenie faktycznie odpowiada pod skonfigurowanym
+        adresem Modbus. Otwarty port COM to NIE to samo co działająca
+        komunikacja - ta metoda czyta rejestr wersji firmware i zwraca True
+        tylko przy realnej odpowiedzi urządzenia.
+        """
+        try:
+            self._read_holding_register(registers.REG_FIRMWARE_VERSION)
+            return True
+        except ModbusDeviceError:
+            return False
+
     # ------------------------------------------------------------------
     # Odczyt temperatury - rejestry podstawowe
     # ------------------------------------------------------------------
@@ -182,6 +196,149 @@ class ModbusTemperatureDevice:
         """True = pomiar poza zakresem aktualnego typu termopary (bit 4)."""
         status = self.read_alarm_status()
         return bool(status & (1 << registers.BIT_ALARM_STATUS_OUT_OF_RANGE))
+
+    # --- Wykrywanie niestabilnego pomiaru (luźny styk termopary) ----------
+    # Zweryfikowane na sprzęcie (diag_termopara.py):
+    #  - podłączona termopara ........ odczyt stabilny, gładki
+    #  - czyste rozłączenie .......... odczyt STABILNY ~temp. otoczenia
+    #  - luźny / przerywany styk ..... odczyt chaotycznie szumi (rozrzut kilka °C)
+    # MB-TC-1 nie ma flagi otwartego wejścia, a czyste rozłączenie daje
+    # stabilną, wiarygodną wartość - software go NIE wykryje. Wykrywalny jest
+    # tylko luźny styk - po niestabilności serii odczytów.
+    _UNSTABLE_SAMPLES = 8         # liczba próbek serii
+    _UNSTABLE_INTERVAL_S = 0.4    # odstęp między próbkami
+    _UNSTABLE_SPREAD_C = 2.0      # próg rozrzutu max-min [°C]
+    _UNSTABLE_JUMP_C = 1.0        # próg skoku między sąsiednimi próbkami [°C]
+
+    def is_reading_unstable(self) -> bool:
+        """
+        Czy pomiar temperatury jest niestabilny - co wskazuje na LUŹNY lub
+        PRZERYWANY styk termopary.
+
+        Pobiera krótką serię odczytów temperatury bezwzględnej. Podłączona
+        (a także czysto rozłączona) termopara daje gładki, stabilny przebieg;
+        przerywany kontakt sprawia, że odczyt skacze chaotycznie.
+
+        UWAGA - to NIE wykrywa czystego, całkowitego rozłączenia termopary.
+        MB-TC-1 nie sygnalizuje otwartego wejścia: podaje wtedy stabilną
+        wartość ~temperatury otoczenia, nieodróżnialną od realnego pomiaru.
+        To ograniczenie sprzętu, nie kodu.
+
+        Niestabilny = JEDNOCZEŚNIE duży rozrzut I duże skoki między próbkami
+        (sam duży rozrzut mógłby wynikać z szybkiej, ale gładkiej zmiany temp.).
+
+        Detekcja wymaga serii próbek, więc trwa ~3 s.
+        """
+        samples = []
+        for i in range(self._UNSTABLE_SAMPLES):
+            samples.append(self.read_temperature())
+            if i < self._UNSTABLE_SAMPLES - 1:
+                time.sleep(self._UNSTABLE_INTERVAL_S)
+
+        spread = max(samples) - min(samples)
+        max_jump = max(
+            abs(samples[i + 1] - samples[i]) for i in range(len(samples) - 1)
+        )
+        return (spread > self._UNSTABLE_SPREAD_C
+                and max_jump > self._UNSTABLE_JUMP_C)
+
+    @staticmethod
+    def _check_alarm_index(alarm: int) -> None:
+        """Waliduje numer alarmu - urządzenie ma 4 niezależne alarmy (1-4)."""
+        if alarm not in (1, 2, 3, 4):
+            raise ModbusDeviceError(f"Numer alarmu musi być 1-4, otrzymano: {alarm}.")
+
+    def read_alarm_value(self, alarm: int) -> int:
+        """
+        Wartość progowa alarmu (1-4) w °C. Rejestry 0x000C-0x000F.
+        Wg dokumentacji wartość jest w surowych stopniach (NIE ×10).
+        """
+        self._check_alarm_index(alarm)
+        raw = self._read_holding_register(registers.REG_ALARM_VALUE_1 + (alarm - 1))
+        return to_signed_16(raw)
+
+    def write_alarm_value(self, alarm: int, value: int) -> None:
+        """Zapisuje wartość progową alarmu (1-4). Zakres -2048..2047 °C."""
+        self._check_alarm_index(alarm)
+        if value < -2048 or value > 2047:
+            raise ModbusDeviceError(
+                "Wartość progowa alarmu musi mieścić się w zakresie -2048..2047 °C."
+            )
+        self._write_register(registers.REG_ALARM_VALUE_1 + (alarm - 1), value)
+
+    def read_alarm_hysteresis(self, alarm: int) -> int:
+        """Histereza alarmu (1-4) w °C. Rejestry 0x0008-0x000B."""
+        self._check_alarm_index(alarm)
+        return self._read_holding_register(registers.REG_ALARM_HYSTERESIS_1 + (alarm - 1))
+
+    def write_alarm_hysteresis(self, alarm: int, hysteresis: int) -> None:
+        """Zapisuje histerezę alarmu (1-4). Zakres 0-255 °C."""
+        self._check_alarm_index(alarm)
+        if hysteresis < 0 or hysteresis > 255:
+            raise ModbusDeviceError(
+                "Histereza alarmu musi mieścić się w zakresie 0-255 °C."
+            )
+        self._write_register(registers.REG_ALARM_HYSTERESIS_1 + (alarm - 1), hysteresis)
+
+    def read_alarm_mode(self, alarm: int) -> bool:
+        """
+        Tryb wyzwalania alarmu (1-4): True = powyżej zadanej temperatury,
+        False = poniżej. Wszystkie 4 alarmy dzielą rejestr 0x0007 (1 bit na alarm).
+        """
+        self._check_alarm_index(alarm)
+        mode = self._read_holding_register(registers.REG_ALARM_MODE)
+        return bool(mode & (1 << (alarm - 1)))
+
+    def write_alarm_mode(self, alarm: int, above: bool) -> None:
+        """
+        Ustawia tryb wyzwalania alarmu (1-4): above=True -> powyżej progu.
+        Read-modify-write rejestru 0x0007, żeby nie ruszyć trybu pozostałych alarmów.
+        """
+        self._check_alarm_index(alarm)
+        mode = self._read_holding_register(registers.REG_ALARM_MODE)
+        bit = 1 << (alarm - 1)
+        if above:
+            mode |= bit
+        else:
+            mode &= ~bit
+        self._write_register(registers.REG_ALARM_MODE, mode & 0xFFFF)
+
+    def read_alarms_overview(self) -> dict:
+        """
+        Pełny obraz alarmów - na potrzeby diagnostyki. Zwraca słownik:
+          {
+            "status_raw": int,        # surowa wartość rejestru 0x0005
+            "out_of_range": bool,     # bit 4 - pomiar poza zakresem termopary
+            "alarms": [ {alarm, triggered, above, value, hysteresis,
+                         value_register, hysteresis_register}, ... ]  # 4 pozycje
+          }
+        """
+        status = self.read_alarm_status()
+        mode = self._read_holding_register(registers.REG_ALARM_MODE)
+        alarms = []
+        for alarm in (1, 2, 3, 4):
+            idx = alarm - 1
+            value = to_signed_16(
+                self._read_holding_register(registers.REG_ALARM_VALUE_1 + idx)
+            )
+            hysteresis = self._read_holding_register(
+                registers.REG_ALARM_HYSTERESIS_1 + idx
+            )
+            alarms.append({
+                "alarm": alarm,
+                # bit 0-3 statusu: 0 = wyzwolony, 1 = nieaktywny (logika odwrócona)
+                "triggered": not (status & (1 << idx)),
+                "above": bool(mode & (1 << idx)),
+                "value": value,
+                "hysteresis": hysteresis,
+                "value_register": registers.REG_ALARM_VALUE_1 + idx,
+                "hysteresis_register": registers.REG_ALARM_HYSTERESIS_1 + idx,
+            })
+        return {
+            "status_raw": status,
+            "out_of_range": bool(status & (1 << registers.BIT_ALARM_STATUS_OUT_OF_RANGE)),
+            "alarms": alarms,
+        }
 
     # ------------------------------------------------------------------
     # Typ termopary

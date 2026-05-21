@@ -18,7 +18,18 @@ Aplikacja ma być prostszym i czytelniejszym odpowiednikiem programu *MB Config*
 - Reset Min/Max.
 - Odczyt i zapis typu czujnika (K, N, PT100, J, T, E, R, S, B, PT500, PT1000).
 - Odczyt i zapis konfiguracji: czas uśredniania, korekcja (offset) temperatury.
+- Podgląd stanu 4 alarmów temperaturowych (Diagnostyka) — status, próg, tryb, histereza.
+- Konfiguracja alarmów — zapis progu, trybu wyzwalania (powyżej / poniżej) i histerezy.
+- Weryfikacja połączenia — „Połącz" potwierdza, że urządzenie faktycznie odpowiada.
 - Log zdarzeń ze znacznikami czasu (połączenia, błędy, timeouty, zapisy).
+- Wykrywanie niestabilnego pomiaru — sygnalizuje luźny / przerywany styk termopary.
+
+> **Uwaga — wykrywanie odłączonej termopary:** aplikacja wykrywa *luźny / przerywany
+> styk* (odczyt zaczyna chaotycznie szumieć). Natomiast **czystego, całkowitego
+> rozłączenia** termopary MB-TC-1 nie sygnalizuje w żaden sposób — przy otwartym
+> wejściu podaje stabilną wartość zbliżoną do temperatury otoczenia, nieodróżnialną
+> od realnego pomiaru. To ograniczenie sprzętu. Stabilny odczyt bliski temperaturze
+> pokojowej warto zweryfikować fizycznie.
 
 ## Najszybszy start (Windows)
 

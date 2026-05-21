@@ -284,6 +284,18 @@ class MainWindow(QMainWindow):
 
         grid.addLayout(ctl, 4, 0, 1, 2)
         layout.addWidget(temp_box)
+
+        tc_note = QLabel(
+            "ℹ Aplikacja wykrywa niestabilny pomiar (luźny / przerywany styk "
+            "termopary). UWAGA: czystego, całkowitego rozłączenia termopary "
+            "MB-TC-1 nie sygnalizuje — daje wtedy stabilny odczyt zbliżony do "
+            "temperatury otoczenia, nieodróżnialny od realnego pomiaru. "
+            "Stabilny wynik bliski temperaturze pokojowej warto zweryfikować."
+        )
+        tc_note.setStyleSheet("color: #444; padding: 4px; background: #f4f4f4; border-radius: 3px;")
+        tc_note.setWordWrap(True)
+        layout.addWidget(tc_note)
+
         layout.addStretch(1)
         return tab
 
@@ -417,6 +429,52 @@ class MainWindow(QMainWindow):
         comm.addLayout(comm_btns, 6, 0, 1, 3)
 
         layout.addWidget(comm_box)
+
+        # ---------- D-3: Alarmy ----------
+        alarm_box = QGroupBox("D-3) Alarmy (bezpieczne, nie zrywają połączenia)")
+        alarm = QGridLayout(alarm_box)
+
+        alarm_info = QLabel(
+            "Konfiguracja jednego z 4 niezależnych alarmów. Wybierz numer alarmu, "
+            "ustaw próg, tryb i histerezę, a następnie zapisz. Przycisk "
+            "„Odczytaj wybrany alarm\" wczytuje aktualne ustawienia z urządzenia."
+        )
+        alarm_info.setStyleSheet("color: #444; padding: 4px; background: #f4f4f4; border-radius: 3px;")
+        alarm_info.setWordWrap(True)
+        alarm.addWidget(alarm_info, 0, 0, 1, 2)
+
+        alarm.addWidget(QLabel("Numer alarmu:"), 1, 0)
+        self.cmb_alarm_no = QComboBox()
+        self.cmb_alarm_no.addItems(["1", "2", "3", "4"])
+        alarm.addWidget(self.cmb_alarm_no, 1, 1)
+
+        alarm.addWidget(QLabel("Wartość progowa [°C] (-2048..2047):"), 2, 0)
+        self.spn_alarm_value = QSpinBox()
+        self.spn_alarm_value.setRange(-2048, 2047)
+        alarm.addWidget(self.spn_alarm_value, 2, 1)
+
+        alarm.addWidget(QLabel("Tryb wyzwalania:"), 3, 0)
+        self.cmb_alarm_mode = QComboBox()
+        self.cmb_alarm_mode.addItems(["Powyżej progu", "Poniżej progu"])
+        alarm.addWidget(self.cmb_alarm_mode, 3, 1)
+
+        alarm.addWidget(QLabel("Histereza [°C] (0-255):"), 4, 0)
+        self.spn_alarm_hyst = QSpinBox()
+        self.spn_alarm_hyst.setRange(0, 255)
+        alarm.addWidget(self.spn_alarm_hyst, 4, 1)
+
+        alarm_btns = QHBoxLayout()
+        self.btn_read_alarm = QPushButton("Odczytaj wybrany alarm")
+        self.btn_read_alarm.clicked.connect(self._on_read_alarm_config)
+        alarm_btns.addWidget(self.btn_read_alarm)
+        self.btn_write_alarm = QPushButton("Zapisz alarm")
+        self.btn_write_alarm.setStyleSheet("font-weight: bold;")
+        self.btn_write_alarm.clicked.connect(self._on_write_alarm_config)
+        alarm_btns.addWidget(self.btn_write_alarm)
+        alarm.addLayout(alarm_btns, 5, 0, 1, 2)
+
+        layout.addWidget(alarm_box)
+
         layout.addStretch(1)
         return tab
 
@@ -456,6 +514,18 @@ class MainWindow(QMainWindow):
         info_grid.addWidget(self.btn_read_info, 4, 0, 1, 2)
 
         layout.addWidget(info_box)
+
+        # Alarmy - sprawdzenie stanu wszystkich 4 alarmów
+        alarm_box = QGroupBox("Alarmy")
+        alarm_layout = QVBoxLayout(alarm_box)
+        self.btn_read_alarms = QPushButton("🔔 Sprawdź stan alarmów")
+        self.btn_read_alarms.setToolTip(
+            "Odczytuje status, próg, tryb i histerezę wszystkich 4 alarmów "
+            "i wypisuje całą listę w logu poniżej."
+        )
+        self.btn_read_alarms.clicked.connect(self._on_read_alarms)
+        alarm_layout.addWidget(self.btn_read_alarms)
+        layout.addWidget(alarm_box)
 
         # Log
         log_box = QGroupBox("Log zdarzeń")
@@ -533,6 +603,7 @@ class MainWindow(QMainWindow):
             self.btn_read_meas, self.btn_write_meas,
             self.btn_read_comm, self.btn_write_comm,
             self.btn_read_info,
+            self.btn_read_alarms, self.btn_read_alarm, self.btn_write_alarm,
             self.chk_cyclic,
         ):
             btn.setEnabled(connected)
@@ -582,20 +653,40 @@ class MainWindow(QMainWindow):
             stopbits=stopbits_serial, slave=slave,
         )
 
+        sb_str = self.cmb_stopbits.currentText()
+
+        # Krok 1: otwarcie portu COM.
         try:
             self.device.connect()
-            sb_str = self.cmb_stopbits.currentText()
-            self._log(
-                f"Połączono z {port} @ {baudrate} {parity}{sb_str}, "
-                f"adres Modbus = {slave}."
-            )
         except ModbusDeviceError as e:
-            self._log(f"Błąd połączenia: {e}")
+            self._log(f"Błąd otwarcia portu: {e}")
             self.device = None
+            self._update_buttons_state()
+            return
         except Exception as e:
             self._log_exception("connect()", e)
             self.device = None
+            self._update_buttons_state()
+            return
 
+        # Krok 2: weryfikacja realnej komunikacji. Otwarty port jeszcze nic
+        # nie znaczy - urządzenie musi faktycznie odpowiedzieć pod zadanym
+        # adresem Modbus, zanim ogłosimy "połączono".
+        if not self.device.ping():
+            self._log(
+                f"Port {port} otwarty, ale urządzenie NIE odpowiada pod adresem "
+                f"Modbus {slave} ({baudrate} {parity}{sb_str}). "
+                f"Sprawdź adres Modbus oraz parametry komunikacji."
+            )
+            self.device.disconnect()
+            self.device = None
+            self._update_buttons_state()
+            return
+
+        self._log(
+            f"Połączono z {port} @ {baudrate} {parity}{sb_str}, "
+            f"adres Modbus = {slave} - urządzenie odpowiada."
+        )
         self._update_buttons_state()
 
     def _on_disconnect(self) -> None:
@@ -656,6 +747,29 @@ class MainWindow(QMainWindow):
                 self.read_timer.stop()
                 self.chk_cyclic.setChecked(False)
             return
+
+        # Najpierw sprawdzamy, czy termopara jest w ogóle podłączona. Bez niej
+        # urządzenie zwraca temperaturę złącza zimnego jako "pomiar" - to
+        # mylące, więc zamiast wartości pokazujemy jednoznaczny błąd.
+        try:
+            if verbose:
+                self._log("Sprawdzam stabilność pomiaru (seria próbek, ~3 s)...")
+            if self.device.is_reading_unstable():
+                for widget in (self.lbl_temp, self.lbl_temp_min, self.lbl_temp_max):
+                    widget.setText("⚠ Niestabilny pomiar")
+                # Złącze zimne to czujnik wewnętrzny - przy luźnym styku
+                # termopary nadal jest wiarygodny, więc pokazujemy je normalnie.
+                try:
+                    self.lbl_cold.setText(f"{self.device.read_cold_junction():.1f} °C")
+                except ModbusDeviceError:
+                    self.lbl_cold.setText("BŁĄD")
+                if verbose:
+                    self._log("⚠ NIESTABILNY POMIAR - kanał termopary szumi, "
+                              "prawdopodobnie luźny styk. Sprawdź połączenie.")
+                return
+        except ModbusDeviceError as e:
+            if verbose:
+                self._log(f"Nie udało się sprawdzić stabilności pomiaru: {e}")
 
         readings = {}
         errors = []
@@ -1049,6 +1163,95 @@ class MainWindow(QMainWindow):
             self._log_exception("read_device_info", e)
 
     # =====================================================================
+    # ALARMY
+    # =====================================================================
+    def _on_read_alarms(self) -> None:
+        """Odczytuje pełny stan 4 alarmów i wypisuje całą listę w logu (Diagnostyka)."""
+        if not self._require_connection():
+            return
+        try:
+            ov = self.device.read_alarms_overview()
+            self._log("=== STAN ALARMÓW (status: rejestr 0x0005) ===")
+            for a in ov["alarms"]:
+                stan = "⚠ WYZWOLONY" if a["triggered"] else "nieaktywny"
+                tryb = "powyżej progu" if a["above"] else "poniżej progu"
+                self._log(
+                    f"  Alarm {a['alarm']}  [{stan}]  -  "
+                    f"próg = {a['value']}°C ({tryb}), histereza = {a['hysteresis']}°C  "
+                    f"(rej. wartości 0x{a['value_register']:04X}, "
+                    f"histerezy 0x{a['hysteresis_register']:04X})"
+                )
+            if ov["out_of_range"]:
+                self._log("  Pomiar: ⚠ POZA ZAKRESEM wybranego typu termopary (0x0005 bit 4)")
+            else:
+                self._log("  Pomiar: w zakresie wybranego typu termopary")
+            self._log("=== koniec listy alarmów ===")
+        except ModbusDeviceError as e:
+            self._log(f"Błąd odczytu stanu alarmów: {e}")
+        except Exception as e:
+            self._log_exception("read_alarms", e)
+
+    def _on_read_alarm_config(self) -> None:
+        """Wczytuje konfigurację wybranego alarmu do pól sekcji D-3."""
+        if not self._require_connection():
+            return
+        alarm = int(self.cmb_alarm_no.currentText())
+        try:
+            value = self.device.read_alarm_value(alarm)
+            above = self.device.read_alarm_mode(alarm)
+            hyst = self.device.read_alarm_hysteresis(alarm)
+
+            self.spn_alarm_value.setValue(value)
+            self.cmb_alarm_mode.setCurrentIndex(0 if above else 1)
+            self.spn_alarm_hyst.setValue(hyst)
+
+            self._log(
+                f"Odczytano alarm {alarm}: próg = {value}°C, "
+                f"tryb = {'powyżej progu' if above else 'poniżej progu'}, "
+                f"histereza = {hyst}°C."
+            )
+        except ModbusDeviceError as e:
+            self._log(f"Błąd odczytu alarmu {alarm}: {e}")
+        except Exception as e:
+            self._log_exception("read_alarm_config", e)
+
+    def _on_write_alarm_config(self) -> None:
+        """Zapisuje konfigurację wybranego alarmu: próg, tryb i histerezę."""
+        if not self._require_connection():
+            return
+
+        alarm = int(self.cmb_alarm_no.currentText())
+        value = self.spn_alarm_value.value()
+        above = self.cmb_alarm_mode.currentIndex() == 0   # 0 = "Powyżej progu"
+        hyst = self.spn_alarm_hyst.value()
+
+        self._log(f"Zapis alarmu {alarm} do urządzenia:")
+
+        try:
+            self.device.write_alarm_value(alarm, value)
+            self._log(f"  ✔ Wartość progowa = {value}°C")
+        except ModbusDeviceError as e:
+            self._log(f"  ✘ Błąd zapisu wartości progowej: {e}")
+        except Exception as e:
+            self._log_exception("write_alarm_value", e)
+
+        try:
+            self.device.write_alarm_mode(alarm, above)
+            self._log(f"  ✔ Tryb wyzwalania = {'powyżej progu' if above else 'poniżej progu'}")
+        except ModbusDeviceError as e:
+            self._log(f"  ✘ Błąd zapisu trybu: {e}")
+        except Exception as e:
+            self._log_exception("write_alarm_mode", e)
+
+        try:
+            self.device.write_alarm_hysteresis(alarm, hyst)
+            self._log(f"  ✔ Histereza = {hyst}°C")
+        except ModbusDeviceError as e:
+            self._log(f"  ✘ Błąd zapisu histerezy: {e}")
+        except Exception as e:
+            self._log_exception("write_alarm_hysteresis", e)
+
+    # =====================================================================
     # OKNO "O PROGRAMIE"
     # =====================================================================
     def _show_about(self):
@@ -1056,7 +1259,7 @@ class MainWindow(QMainWindow):
             self,
             "O programie",
             "<b>MB-TC Configurator</b><br>"
-            "Wersja 1.0.1<br><br>"
+            "Wersja 1.0.2<br><br>"
             "Konfigurator przetwornika temperatury F&amp;F MB-TC-1 (Modbus RTU).<br><br>"
             "Producent: <a href='https://sincore.io'>sincore.io</a><br>"
             "Kontakt: <a href='mailto:contact@sincore.io'>contact@sincore.io</a>",
